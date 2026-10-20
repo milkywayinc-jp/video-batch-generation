@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 /runs/
 /local/
+.video-batch/
 /reviews/
 .env
 .env.*

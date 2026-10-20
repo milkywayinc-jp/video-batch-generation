@@ -12,13 +12,31 @@ from videobatch.sheets import analyze_sheet, edit_template, live_snapshot, write
 
 
 def parser():
-    p = argparse.ArgumentParser(description="★台本 → 音声・尺 → 正方形動画（明示実行のみ）")
+    p = argparse.ArgumentParser(description="★台本とシートの制作ルール → 音声・尺 → 動画（明示実行のみ）")
     commands = p.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect", help="Read ★ sheets; create local plans only")
     source = inspect.add_mutually_exclusive_group(required=True)
     source.add_argument("--spreadsheet-id")
     source.add_argument("--snapshot", help="Offline Sheets get response including merges and grid data")
     inspect.add_argument("--out", required=True)
+    setup = commands.add_parser("setup", help="Verify a pinned template; --apply creates own native copy only")
+    setup.add_argument("--source-id", required=True)
+    setup.add_argument("--release", required=True, help="Packaged immutable release manifest")
+    setup.add_argument("--state-dir", required=True, help="Private local workspace state, never commit")
+    setup.add_argument("--apply", action="store_true")
+    copy_choice = setup.add_mutually_exclusive_group()
+    copy_choice.add_argument("--reuse-copy-id", help="Explicitly choose an existing owned copy after candidate review")
+    copy_choice.add_argument("--create-another", action="store_true", help="Explicitly request another copy despite existing candidates")
+    finish = commands.add_parser("setup-finish", help="Record verified destinations and chat/handoff status")
+    finish.add_argument("--state-dir", required=True)
+    finish.add_argument("--destinations", required=True, help="Run-local JSON file with material/output/handoff")
+    finish_mode = finish.add_mutually_exclusive_group(required=True)
+    finish_mode.add_argument("--chat-id")
+    finish_mode.add_argument("--manual-handoff", action="store_true")
+    resolve = commands.add_parser("resolve", help="Bind Codex's run-local sheet interpretation; create executable plan")
+    resolve.add_argument("--plan", required=True)
+    resolve.add_argument("--interpretation", required=True)
+    resolve.add_argument("--out", required=True)
     adjust = commands.add_parser("adjust-audio", help="Adjust an already acquired narration batch locally")
     adjust.add_argument("--plan", required=True)
     adjust.add_argument("--batch-id", required=True)
@@ -47,6 +65,17 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
+        if args.command == "setup":
+            from videobatch.onboarding import setup
+            result = setup(args.source_id, read_json(args.release), args.state_dir, args.apply,
+                           args.reuse_copy_id, args.create_another)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "setup-finish":
+            from videobatch.onboarding import finish_setup
+            result = finish_setup(args.state_dir, read_json(args.destinations), args.chat_id, args.manual_handoff)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
         if args.command == "inspect":
             snapshot = read_json(args.snapshot) if args.snapshot else live_snapshot(args.spreadsheet_id)
             out = new_directory(args.out)
@@ -59,9 +88,10 @@ def main(argv=None):
                 try:
                     plan = analyze_sheet(snapshot, sheet)
                     save_json(out / f"{sid}.plan.json", plan)
-                    save_json(out / f"{sid}.edit.json", edit_template(plan))
+                    from videobatch.rules import interpretation_template
+                    save_json(out / f"{sid}.interpretation.json", interpretation_template(plan))
                     results.append({"sheet_id": sid, "cuts": len(plan["cuts"]),
-                                    "batches": len(plan["batches"]), "status": "planned",
+                                    "status": "needs_rule_resolution",
                                     "pending_material_rows": plan["known_pending"]["material_rows"]})
                 except BatchError as exc:
                     results.append({"sheet_id": sid, "status": "blocked", "error": str(exc)})
@@ -69,6 +99,15 @@ def main(argv=None):
             save_json(out / "inspection.json", results)
             print(json.dumps(results, ensure_ascii=False))
             return 2 if any(r["status"] == "blocked" for r in results) else 0
+        if args.command == "resolve":
+            from videobatch.rules import resolve_plan
+            plan = resolve_plan(read_json(args.plan), read_json(args.interpretation))
+            out = new_directory(args.out)
+            save_json(out / "plan.json", plan)
+            save_json(out / "edit.json", edit_template(plan))
+            print(json.dumps({"plan": str(out / "plan.json"), "edit": str(out / "edit.json"),
+                              "batches": len(plan["batches"]), "rules_hash": plan["resolved_rules"]["integrity"]}))
+            return 0
         if args.command == "writeback":
             result = writeback(read_json(args.plan), args.prepared, args.state_dir,
                                args.apply, args.edit_window_confirmed)

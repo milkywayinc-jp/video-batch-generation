@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "version": "2026-10-20-v1",
+  "title": "動画_素材生成用_配布基準版_2026-10-20_v1",
+  "captured_date": "2026-10-20",
+  "structure_sha256": "b9b349ab9e3bb4a9aeedaa2f600e9c90f8f48e95fa548d09a567fc18d25c77c7",
+  "source_policy": "Use the preserved workbook provided by its owner; never silently replace it with the latest working sheet.",
+  "access_policy": "The workbook contains scripts and remains access-controlled in Google Drive; this package does not grant access.",
+  "fingerprint_schema": 2
+}

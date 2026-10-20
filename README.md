@@ -1,137 +1,118 @@
 # 動画一括生成
 
-Googleスプレッドシートの★付き台本を読み、取得済み音声の調整・行分割・秒数記録・正方形動画の合成を行うCodexスキルです。初期実装として公開しています。
+Googleスプレッドシートを**制作ルールの正本**にする、Codex用のスキル・プラグインとローカル編集CLIです。
+全体設定・共通設定・行別指定を毎回Codexが読み、音声と動画の処理へ反映します。サイズ・fps・フォント・音声速度・末尾尺などをスキルの固定ルールとして保存しません。
 
-**このリポジトリを閲覧・ダウンロードしただけでは何も実行されません。** スケジューラー、GitHub Actions、インストール時の実行処理、サーバー、Webhook、既存スキルを書き換える処理はありません。Google Sheetsは明示的な読取コマンドで接続し、書込はさらに `--apply --edit-window-confirmed` を指定した場合だけです。利用していない人のPC・広告アカウント・シートには作用しません。
+ダウンロード、clone、`--help`、Pythonのimportだけでは、チャット作成・Google Driveへの書込・動画生成は実行されません。常駐処理・自動実行フック・広告入稿はありません。
 
-## 現在できること
+## 導入時と制作時
 
-- ★付きシートの探索、結合ヘッダーの解釈、可変行数のカット抽出。LENや全編注釈を最終カットと誤認しない。
-- 140字以下の音声バッチ計画。取得済み音声の1.1倍速化、長い無音の短縮、確認済みのサンプル境界による行分割。
-- 素材音声を使うカットの映像・音声の連動編集。無音カットは明示尺を要求。
-- 各行Hと、最終カット直後のG/Hへの数値書戻し。直前・直後の再読、所有journal、ローカルロック、更新予定のプレビュー。
-- 1080×1080・30fps・H.264/AAC、全面クロップ、字幕の横幅圧縮、2種類の注釈、末尾60フレームの無音、AAC後の音量・尺・フレーム数の計測。
+1. パッケージをCodexへ導入し、利用者が「セットアップ」を開始します。
+2. 保存済みの配布基準版を照合し、台本・設定・数式・結合・書式を含む自分用のGoogleスプレッドシートを作ります。
+3. コピーURLと制作の開始文を渡し、利用できる公式機能で制作チャットを準備します。
+4. 制作では、その利用者のコピーの最新ルールを読みます。コピーの設定を変えれば、その利用者の制作に反映されます。
 
-## まだ自動化していないこと
+**配布基準版は`2026-10-20-v1`に固定**しています。元の作業シートを後から編集しても、配布する形は自動で変わりません。別の形を配布したい場合は、新しい版を明示的に保存します。既存の利用者のコピーも書き換えません。
 
-- 音声メーカーへの自動送信・生成。指定サービスで利用可能な接続経路から音声を取得して取り込みます。公開・非公開APIを推測して呼びません。
-- 日本語の発話境界の全自動認定。無音点は候補です。実際に試聴してサンプル位置を確認します。
-- 自然文で書かれた全編集指定の機械解釈。Codexが共通・個別設定を読み、対応するmanifest値へ反映します。対応できない指定は保留にします。
-- 素材の意味理解、被写体との重なりの自動保証。動きの大きい区間は数値で候補選択しますが、開始点・字幕位置は目視確認が必要です。
-- 広告入稿、他チャットへの無条件連絡、共同編集者との完全排他。
-
-本番素材・音声が未入力の台本は、計画と不足一覧まで作成します。工程試験の動画を本番台本の完成品として扱いません。1行の読み上げ本文が140字を超える場合は、現在のCLIは内部分割を自動作成せず明示的に停止します。
+基準版の台本はGoogle Driveのアクセス制限下に置きます。公開GitHubには台本本文・原本/基準版のファイルID・素材フォルダID・チャット履歴を含めません。利用者は管理者から基準版URLを受け取るか、自分がアクセスできる基準版をDriveで選びます。**GitHubのダウンロードだけで私有シートへのアクセス権は得られません。**
 
 ## 必要な環境
 
-- macOSまたはLinux、Python 3.9以降、ffmpeg/ffprobe（libx264・loudnorm搭載）
-- Pillow 10〜12
-- 実シートの操作にGoogle Workspace CLI（`gws`）と、利用者自身のSheets認証
-- Noto Sans JPの可変フォント（Weight軸400〜900）。フォントファイルは同梱しません。利用者が公式配布元のライセンスを確認し、継続して使える場所へ保存してください。
+- Codexと、このパッケージのスキル/プラグインを利用できる環境。
+- Python 3.9以上、`ffmpeg`、`ffprobe`、`requirements.txt`のPillow。
+- 認証済みのGoogle Workspace CLI `gws`。Sheetsの読取・必要時の書戻しと、Driveの読取/コピー権限。
+- シートが指定するフォントの実ファイル、素材、取得済みナレーション。利用者が使える場所へ保存してください。
+- 新規チャットの自動作成には、その環境で利用できる公式のチャット作成機能が必要です。
 
-[gws公式リポジトリ](https://github.com/googleworkspace/cli) / [Noto Sans JP公式配布](https://github.com/google/fonts/tree/main/ofl/notosansjp)
+認証情報は同梱しません。依存関係や認証を勝手にインストール/変更する処理もありません。
 
-Pythonの依存は、自分の仮想環境に明示的に入れます。既存の共通環境は変更しません。
+## Codexへの導入
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+このリポジトリ全体を取得し、Codexのプラグイン導入機能でパッケージとして追加してください。入口は`plugin.json`、セットアップは`skills/setup/SKILL.md`、制作は`skills/video-batch-generation/SKILL.md`です。
+
+プラグイン導入機能がない環境では、リポジトリ全体を単体スキルのフォルダとして導入できます。ルートの`SKILL.md`が入口です。`SKILL.md`だけをコピーするとCLIや参照資料が欠けるため、フォルダ全体を保持してください。
+
+導入後の開始文：
+
+> 動画一括生成をセットアップして、新しい制作チャットと自分用の台本シートのコピーを作ってください。
+
+公式onboardingは新しい会話で起動する場合と、導入中の既存会話を使う場合があります。新規作成機能が使えない環境では、コピーURLと開始文を渡して手動で新しいチャットを開きます。ZIPのダウンロード自体をチャット作成の契機にはできません。
+
+仕様：[OpenAI公式・プラグインのonboarding](https://developers.openai.com/plugins/build/plugins)
+
+## セットアップCLI
+
+以下はパッケージルートで実行します。`SOURCE_ID`は管理者が保存した基準版、`PRIVATE_STATE`は利用者の私有状態フォルダです。
+
+```sh
+python3 scripts/video_batch.py setup \
+  --source-id SOURCE_ID \
+  --release templates/releases/2026-10-20-v1.json \
+  --state-dir PRIVATE_STATE
 ```
 
-以下の `python3` は必要に応じて `.venv/bin/python` に置き換えます。認証トークンを引数・ログ・リポジトリへ保存しないでください。このコードは既存のgws認証を利用し、鍵やブラウザCookieを読み出しません。
+初期動作は照合と予定の表示のみです。明示的なセットアップ実行時に`--apply`を付けると、本人のMy Driveの非共有`ChatGPT`フォルダへネイティブコピーを作ります。共有ドライブ・他人所有の保存先・共有された同名フォルダは初期対応範囲外です。元シートや基準版の内容・共有設定は変更しません。
 
-## Codexへの導入（任意・手動）
+コピー前に状態を保存し、Driveにもトランザクション識別子を付けます。通信結果が不明なら検索照合し、結果がゼロでも自動で再送しません。再実行は同じstateを使ってください。別端末や状態消失時は、既存候補を確認してから新規/再利用を決めます。
 
-CLIはこのフォルダからそのまま使えます。スキルとして検出させたい人だけ、自分のプロジェクトの `.agents/skills/video-batch-generation/` へ次をコピーしてください。既存の同名フォルダを上書きしないでください。
+候補選択後は`--reuse-copy-id ID`、別のコピーを明示的に作る場合は`--create-another`を使います。同じworkspaceに記録済みのコピーは、そのまま再開できます。
 
-```text
-video-batch-generation/
-  SKILL.md
-  README.md
-  requirements.txt
-  agents/
-  references/
-  scripts/
+素材・保存先・引継ぎ先を確認し、`material`、`output`、`handoff`を持つ私有JSONへ記録します。未確定は`pending`、不要は`none`とします。
+
+```sh
+python3 scripts/video_batch.py setup-finish \
+  --state-dir PRIVATE_STATE --destinations DESTINATIONS_JSON \
+  --chat-id VERIFIED_CHAT_ID
 ```
 
-Gitの管理情報、runs、local、認証情報はコピー不要です。共通のAGENTS.mdやグローバルな既存スキルの編集は必要ありません。表示名は「動画一括生成」、呼出名は `$video-batch-generation` です。
+手動でチャットを開く場合は`--chat-id`の代わりに`--manual-handoff`。このCLI自体はチャットを作りません。setupスキルが公式ツールと連携します。`production-chat-prompt.txt`とコピーURLが開始用の引継ぎです。
 
-## 使い方
+シートのコピーは、リンク先の素材フォルダ・動画・保存先・別のチャットまでは複製しません。旧保存先へ自動で書き込まず、利用者の接続と保存先を確認します。
 
-すべての出力先は新しいフォルダを指定します。既存の出力は上書きしません。実台本・個人パスを含む出力は `runs/` 配下に置き、公開しないでください。
+## シートから動画まで
 
-### 1. 読取と計画（シート変更なし）
+テンプレートの構造は、全体設定、項目別共通設定、台本ヘッダー、カット行です。対象は★付きタブ。結合や行数は実シートから判定し、合計は実際の最終カット直後へ置きます。空のLEN数式行をカットとして数えません。
 
-```bash
-python3 scripts/video_batch.py inspect \
-  --spreadsheet-id YOUR_SPREADSHEET_ID --out runs/job-001/inspection
+```sh
+python3 scripts/video_batch.py inspect --spreadsheet-id WORKING_COPY_ID --out runs/inspect
+python3 scripts/video_batch.py resolve --plan RAW_PLAN --interpretation INTERPRETATION --out runs/resolved
 ```
 
-sheetIdごとの `.plan.json` と `.edit.json`、元のsnapshotができます。シート名・件数・最終行は固定しません。★付き全対象を毎回調べます。共通設定、個別指定、既知の素材保留を読み、editを埋めます。入力列はA:Kの台本書式です。詳細は [manifestの仕様](references/manifest.md) を参照してください。
+`inspect`は設定の読取まで行います。**Codexが自然文を解釈**し、セル出典を添えたその実行限りのinterpretationを作ります。`resolve`が型・単位・対応値・全セルの解釈・出典を検証し、実行planと音声バッチを作ります。利用者にJSONを恒久ルールとして手入力・保守させる設計ではありません。
 
-### 2. 取得した通常ナレーションの調整
+優先順位は行別指定→項目別共通設定→全体設定。変更を検出したら古い実行設定や音声を再利用せず、再読して解釈し直します。対応外・曖昧な指定や不足した必須値は、セルを示して保留します。
 
-```bash
-python3 scripts/video_batch.py adjust-audio \
-  --plan runs/job-001/inspection/SHEET_ID.plan.json \
-  --batch-id batch-001 --input /absolute/path/acquired-audio.mp4 \
-  --out runs/job-001/batch-001
+```sh
+python3 scripts/video_batch.py adjust-audio --plan PLAN --batch-id BATCH_ID --input AUDIO --out runs/audio
+python3 scripts/video_batch.py prepare --plan PLAN --edit EDIT --out runs/prepared
+python3 scripts/video_batch.py writeback --plan PLAN --prepared PREPARED --state-dir PRIVATE_STATE
+python3 scripts/video_batch.py render --plan PLAN --prepared PREPARED --out runs/render --local-only
 ```
 
-`adjusted.wav` と `adjusted.audio.json` ができます。通常生成だけを1.1倍速にします。元動画音声の指定行はこのコマンドへ送らず、連動区間をeditへ記録します。
+音声取得→シートの速度/無音調整→試聴した行境界→実測尺→書戻し→その尺の映像と文字、の順で進めます。最後の無音尺はシートに従い、タイムライン生成時だけ一度追加します。0秒にも対応します。元動画音声は確認した区間で映像と連動させ、通常TTSの速度変更へ送らない構成です。
 
-調整後の音声を試聴し、各バッチの `path`、元行数+1個の `boundaries`、確認済みの `verified` を設定してください。単位は48kHzのサンプル番号で、先頭0、末尾はファイル全サンプル数です。文字数比例で境界を捏造しないでください。
+書戻しは予定表示が初期動作。実書込はユーザーの書込指示と短い編集停止時間を確認後、`--apply --edit-window-confirmed`。G/Hの値のみを対象とし、元の書式・数式・結合・他のデータを変更しません。前回合計は自分のjournalが所有を確認できるものだけ移動します。書込直前と直後に、数式の再計算結果を含めて再読します。Google Sheetsの読取と書込は人の同時編集と原子的ではないため、編集停止時間が必要です。
 
-### 3. 尺の確定と素材検査（シート変更なし）
+本番renderは`--local-only`の代わりに`--receipt CONFIRMED_RECEIPT`を使います。機械検証合格は目視・試聴の完了を意味しません。本番完成には両方が必要です。
 
-```bash
-python3 scripts/video_batch.py prepare \
-  --plan runs/job-001/inspection/SHEET_ID.plan.json \
-  --edit runs/job-001/inspection/SHEET_ID.edit.json \
-  --out runs/job-001/prepared
+契約と対応値は[ルール契約](references/rules.md)、実素材の指定は[manifest](references/manifest.md)、実施済みの検証は[validation](references/validation.md)。
+
+## 現段階の対応範囲
+
+- シート由来のサイズ・有理数fps、cover/contain、字幕/注釈のフォント・サイズ・色・縁・位置・改行・幅処理。
+- 音声バッチ上限、通常ナレーション速度、無音調整、末尾尺、音量目標・ピーク上限、BGMゲイン。
+- H.264/AACとハードカット、尺不足時のエラー。別コーデック・フェード・任意の編集効果は対応外として返します。
+- 内部音声編集は48kHzモノラル16-bit PCM。出力音声はAAC。フレーム→サンプルは累積境界から計算し、非整数fpsの丸め誤差をカットごとに積み上げません。
+
+TTSサービスの自動生成API、発話境界の全自動認識、素材未指定の全編制作、広告入稿は未実装です。シートに音声サービスURLが書かれていても、そのサービスへの接続実装や利用許諾まで用意されたことにはなりません。
+
+v0.1の固定値入りplan/edit/preparedとは互換性を持たせていません。最新シートをinspect/resolveし直してください。配布基準版の保存と、制作ルールをスキルへ固定することは別です。
+
+## 検証
+
+```sh
+VIDEO_BATCH_TEST_FONT=/absolute/path/to/variable-font.ttf \
+  python3 -m unittest discover -s tests -v
 ```
 
-各行の尺はフレーム単位で確定し、最後だけ無音60フレームを含めます。素材不足・未確定区間は停止し、勝手にループしません。`prepared.json` が尺の記録です。
-
-### 4. 書戻し予定の確認と実更新
-
-まず次のコマンドだけで更新予定のJSONを確認します。
-
-```bash
-python3 scripts/video_batch.py writeback \
-  --plan runs/job-001/inspection/SHEET_ID.plan.json \
-  --prepared runs/job-001/prepared/prepared.json --state-dir local/sheet-state
-```
-
-実更新する場合だけ、同じコマンドへ `--apply --edit-window-confirmed` を追加します。`--edit-window-confirmed` は共同編集者がその短い更新時間に編集しないことを確認した意味です。確認なしにCodexが付けないでください。Sheets APIのセル更新と人手編集は完全排他にできず、直前・直後の照合でも上書きを完全には防げません。
-
-同じシートの全runで同じ `state-dir` を使います。同一ユーザー・同一ホストの実行は、state-dirが異なってもシートID基準の一時ロックで競合を防ぎます。別端末は排他できません。journalは所有権と障害復旧の記録なので保持してください。前回の合計が未所有なら、自動で削除・新設しません。通信結果不明の書込を盲目的に再送しません。
-
-### 5. レンダリングと確認
-
-本番は書戻し結果のreceiptを指定します。
-
-```bash
-python3 scripts/video_batch.py render \
-  --plan runs/job-001/inspection/SHEET_ID.plan.json \
-  --prepared runs/job-001/prepared/prepared.json \
-  --receipt local/sheet-state/RECEIPT_DIRECTORY/journal.json \
-  --out runs/job-001/rendered
-```
-
-シートを更新しない工程試験では、`--receipt ...` の代わりに `--local-only` を明示します。シート名のMP4、カット別字幕PNG、`validation.json` が出ます。出力は機械検証の合格までで、`production_complete` はfalseです。目視・試聴と最新シート照合を経て制作担当が完成判断してください。最後の連結やレンダリングで無音2秒を再追加しないでください。
-
-音量の機械判定はAAC後で−7.2±0.3 LUFS、true peakは−1 dBTP以下です。最後の60フレームを無音とし、AACの残響確認には先頭1フレームの許容を設けます。無音だけの台本にはLUFSの有限値を要求しません。量子化・音量測定結果はJSONに残します。
-
-この音量とピークを同時に満たすため、必要な場合はコンプレッサーと先読みリミッターを適用し、その試行と測定値を記録します。音の自然さは必ず試聴してください。BGMは一度だけデコードして連続位置から切り出し、正規化前のミックスでクリップする音量指定はエラーにします。
-
-## 検証状況とデータの公開範囲
-
-合成データの境界テストに加え、開発環境では実Google Sheetsの読取と、ローカル実動画で編集工程を検証します。実シートの書込・音声メーカー生成・本番全編制作は未検証のため、完了したとは扱いません。確認内容の現状は [検証記録](references/validation.md) を参照してください。
-
-```bash
-python3 -m unittest discover -s tests -v
-python3 scripts/video_batch.py --help
-```
-
-公開対象はコード・スキル・説明・合成テストだけです。実台本、シートID、入稿先、広告素材、フォント、音声、トークン、社内パスは含めません。`.gitignore` は予防策なので、公開前にはGitの実際の追跡ファイルも点検してください。GitHub上での公開は、音声サービスやフォントなど第三者の利用条件を変更するものではありません。
+ffmpegや指定フォントがない場合は該当テストがskipになります。実サービスへ書き込むテストは自動実行しません。私有の`runs/`、`local/`、state、素材、認証情報はGitへ含めないでください。

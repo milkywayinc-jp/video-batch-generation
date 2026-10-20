@@ -19,6 +19,13 @@ def gws_get(spreadsheet_id, **kwargs):
 
 
 def live_snapshot(spreadsheet_id, sheet_id=None):
+    first = _live_snapshot_once(spreadsheet_id, sheet_id)
+    second = _live_snapshot_once(spreadsheet_id, sheet_id)
+    require(digest(first) == digest(second), "Sheet changed during paged read; inspect again")
+    return second
+
+
+def _live_snapshot_once(spreadsheet_id, sheet_id=None):
     require(re.fullmatch(r"[A-Za-z0-9_-]+", spreadsheet_id or ""), "Invalid spreadsheet ID")
     meta = gws_get(spreadsheet_id, fields="spreadsheetId,sheets(properties,merges,conditionalFormats)")
     targets = [s for s in meta.get("sheets", []) if "★" in s["properties"]["title"]
@@ -85,19 +92,26 @@ def sheet_fingerprint(sheet):
                              for (r, c), cell in entered_cells(sheet).items()}})
 
 
-def make_batches(cuts):
+def make_batches(cuts, rules):
+    from .rules import cut_rules
     batches = []
     current = None
     for cut in cuts:
-        if cut["audio_mode"] != "narration":
+        resolved = cut_rules(rules, cut["row"])
+        if resolved["mode"] != "narration":
             current = None
             continue
         text = cut["speech"]
-        require(len(text) <= 140 and len(text.encode("utf-16-le")) // 2 <= 140,
-                f"Row {cut['row']}: a single speech exceeds 140 characters; split into approved sub-batches first")
+        limit = resolved["audio"]["batch_limit"]
+        group = resolved["audio"]
+        if current and current["audio_rules"] != group:
+            current = None
+        require(len(text) <= limit and len(text.encode("utf-16-le")) // 2 <= limit,
+                f"Row {cut['row']}: a speech exceeds sheet limit {limit}; split into verified sub-batches first")
         candidate = (current["text"] + "\n" if current else "") + text
-        if current is None or len(candidate) > 140 or len(candidate.encode("utf-16-le")) // 2 > 140:
-            current = {"id": f"batch-{len(batches) + 1:03}", "text": "", "rows": [], "offsets": []}
+        if current is None or len(candidate) > limit or len(candidate.encode("utf-16-le")) // 2 > limit:
+            current = {"id": f"batch-{len(batches) + 1:03}", "text": "", "rows": [], "offsets": [],
+                       "audio_rules": group}
             batches.append(current)
         start = len(current["text"]) + (1 if current["rows"] else 0)
         current["text"] += ("\n" if current["rows"] else "") + text
@@ -146,36 +160,44 @@ def analyze_sheet(snapshot, sheet):
                                     "cut": str(value(cells, row, 6)), "audio": custom}})
     require(cuts, "No script cuts")
     require(not orphans, f"Orphan individual directives at rows {orphans}; resolve before editing")
-    require(len({c["note2"] for c in cuts}) == 1, "Note ② must be consistent throughout the video")
-    settings = {"global": str(value(cells, header - 2, 0)),
+    settings = {"global": str(value(cells, header - 2, 0)), "memo": str(value(cells, header - 2, 5)),
                 "caption": str(inherited(sheet, cells, header - 1, 0)),
                 "note1": str(value(cells, header - 1, 3)),
                 "note2": str(value(cells, header - 1, 4)),
                 "material": str(inherited(sheet, cells, header - 1, 5)),
                 "audio": str(inherited(sheet, cells, header - 1, 7)),
                 "bgm": str(value(cells, header - 1, 10))}
-    return {"schema_version": 1, "spreadsheet_id": snapshot["spreadsheetId"],
+    # Store the rule cells themselves, including formula results, rather than
+    # turning their current editing preferences into Python defaults.
+    coordinates = [(header - 2, 0), (header - 2, 5)] + [(header - 1, c) for c in (0, 3, 4, 5, 7, 10)]
+    coordinates += [(cut["row"], c) for cut in cuts for c in (2, 6, 9)]
+    inputs = {}
+    for row, col in coordinates:
+        if value(cells, row, col) != "":
+            key = f"{chr(65 + col)}{row}"
+            inputs[key] = {"entered": entered(cells, row, col), "effective": value(cells, row, col)}
+    return {"schema_version": 2, "spreadsheet_id": snapshot["spreadsheetId"],
+            "source_kind": snapshot.get("source", "offline"),
             "sheet_id": props["sheetId"], "sheet_name": props["title"],
             "source_hash": sheet_fingerprint(sheet), "header_row": header,
             "last_cut_row": cuts[-1]["row"], "total_row": cuts[-1]["row"] + 1,
             "old_total_candidates": old_totals, "settings": settings, "cuts": cuts,
-            "batches": make_batches(cuts),
+            "rule_inputs": inputs,
             "known_pending": {"material_rows": [c["row"] for c in cuts if not c["material"]],
                               "material_folder": "Resolve from settings or explicit local path",
                               "output_folder": "Explicit local output path required"}}
 
 
 def edit_template(plan):
-    return {"schema_version": 1, "source_hash": plan["source_hash"],
-            "settings_reviewed": False, "font_path": "", "material_root": "",
+    from .rules import validate_rules
+    rules = validate_rules(plan)
+    return {"schema_version": 2, "source_hash": plan["source_hash"],
+            "resolved_rules_hash": rules["integrity"], "fonts": {}, "material_root": "",
             "batches": [{"id": b["id"], "path": "", "boundaries": [], "verified": False}
                         for b in plan["batches"]],
             "cuts": [{"row": c["row"], "video_path": "", "video_start": None,
                       "source_intervals": [], "source_verified": False,
-                      "silent_frames": None, "caption_y": 810,
-                      "directives_reviewed": not any(c["directives"].values()) or
-                          c["directives"] == {"caption": "", "cut": "", "audio": "動画の音声をそのまま使用"},
-                      "bgm_path": "", "bgm_gain_db": None} for c in plan["cuts"]]}
+                      "silent_frames": None, "bgm_path": ""} for c in plan["cuts"]]}
 
 
 def find_sheet(snapshot, sheet_id):
@@ -187,8 +209,9 @@ def find_sheet(snapshot, sheet_id):
 def require_plan_unchanged(plan, sheet):
     require(sheet_fingerprint(sheet) == plan["source_hash"], "Sheet changed; inspect and prepare again")
     # Formula text can stay the same while referenced values change.
-    current_plan = analyze_sheet({"spreadsheetId": plan["spreadsheet_id"]}, sheet)
-    require(digest(current_plan) == digest(plan),
+    from .rules import raw_plan
+    current_plan = analyze_sheet({"spreadsheetId": plan["spreadsheet_id"], "source": plan.get("source_kind", "offline")}, sheet)
+    require(digest(current_plan) == digest(raw_plan(plan)),
             "Formula results or script interpretation changed; inspect and prepare again")
 
 
@@ -243,11 +266,13 @@ def expected_writes(plan, prepared, snapshot, previous=None):
     for cut in prepared["cuts"]:
         require(isinstance(cut["frames"], int) and not isinstance(cut["frames"], bool)
                 and cut["frames"] > 0, "Invalid measured frame count")
-        updates[f"{cut['row']}:7"] = {"numberValue": cut["frames"] / 30}
+        from .rules import Timebase
+        tb = Timebase(prepared["fps"])
+        updates[f"{cut['row']}:7"] = {"numberValue": tb.seconds(cut["frames"])}
     require(isinstance(prepared["total_frames"], int) and not isinstance(prepared["total_frames"], bool)
             and sum(c["frames"] for c in prepared["cuts"]) == prepared["total_frames"], "Timing total mismatch")
     updates[f"{end}:6"] = {"stringValue": "合計秒数"}
-    updates[f"{end}:7"] = {"numberValue": prepared["total_frames"] / 30}
+    updates[f"{end}:7"] = {"numberValue": tb.seconds(prepared["total_frames"])}
     return updates
 
 

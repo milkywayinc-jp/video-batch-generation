@@ -10,6 +10,7 @@ from videobatch.sheets import (analyze_sheet, expected_writes, make_batches,
 import tempfile
 from unittest.mock import patch
 from videobatch.common import save_json, file_hash
+from support import resolved
 
 
 def fixture():
@@ -45,7 +46,7 @@ class SheetsTests(unittest.TestCase):
         self.assertEqual(plan["total_row"], 7)
         self.assertTrue(all(c["note2"] == "提供：サンプル" for c in plan["cuts"]))
         self.assertEqual(plan["cuts"][1]["audio_mode"], "source")
-        self.assertEqual([b["rows"] for b in plan["batches"]], [[4], [6]])
+        self.assertEqual([b["rows"] for b in resolved(plan)["batches"]], [[4], [6]])
         self.assertEqual(plan["cuts"][0]["caption"], "最初\nのテロップ")
 
     def test_gaps_and_unowned_total(self):
@@ -53,7 +54,7 @@ class SheetsTests(unittest.TestCase):
         put(snap, 7, 6, {"stringValue": "合計秒数"})
         put(snap, 7, 7, {"numberValue": 11})
         plan = analyze_sheet(snap, snap["sheets"][0])
-        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "total_frames": 90}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 90}
         with self.assertRaisesRegex(BatchError, "unowned"):
             expected_writes(plan, timing, snap)
         put(snap, 8, 1, {"stringValue": "追加"})
@@ -62,7 +63,7 @@ class SheetsTests(unittest.TestCase):
     def test_concurrent_edit_refuses_all_writes(self):
         snap = fixture()
         plan = analyze_sheet(snap, snap["sheets"][0])
-        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 31} for r in [4, 5, 6]], "total_frames": 93}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 31} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 93}
         changed = copy.deepcopy(snap)
         put(changed, 5, 8, {"stringValue": "同時編集"})
         with self.assertRaisesRegex(BatchError, "Sheet changed"):
@@ -79,7 +80,7 @@ class SheetsTests(unittest.TestCase):
         plan = analyze_sheet(snap, snap["sheets"][0])
         previous = {"status": "confirmed", "total_row": 7,
                     "writes": {"7:6": {"stringValue": "合計秒数"}, "7:7": {"numberValue": 3}}}
-        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6, 7]], "total_frames": 120}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6, 7]], "fps": "30/1", "total_frames": 120}
         writes = expected_writes(plan, timing, snap, previous)
         self.assertEqual(writes["7:6"], {})
         self.assertEqual(writes["7:7"], {"numberValue": 1})
@@ -89,18 +90,20 @@ class SheetsTests(unittest.TestCase):
         snap = fixture()
         put(snap, 8, 1, {"stringValue": "最後"})
         plan = analyze_sheet(snap, snap["sheets"][0])
-        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6, 8]], "total_frames": 120}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6, 8]], "fps": "30/1", "total_frames": 120}
         with self.assertRaisesRegex(BatchError, "blank row"):
             expected_writes(plan, timing, snap)
 
     def test_batches_account_for_newlines_and_utf16(self):
         cuts = [{"row": r, "audio_mode": "narration", "speech": text}
                 for r, text in [(4, "あ" * 70), (5, "い" * 69), (6, "う")]]
-        batches = make_batches(cuts)
+        rules = {"values": {"audio": {"batch_limit": 140}, "styles": {"caption": {}, "note1": {}, "note2": {}}},
+                 "cuts": [{"row": c["row"], "mode": "narration", "audio": {}, "styles": {}, "bgm_gain_db": None} for c in cuts]}
+        batches = make_batches(cuts, rules)
         self.assertEqual([b["rows"] for b in batches], [[4, 5], [6]])
         self.assertEqual(batches[0]["offsets"][1]["start"], 71)
         with self.assertRaises(BatchError):
-            make_batches([{"row": 4, "audio_mode": "narration", "speech": "😀" * 71}])
+            make_batches([{"row": 4, "audio_mode": "narration", "speech": "😀" * 71}], rules)
 
     def test_unowned_old_total_not_at_destination_blocks_write(self):
         snap = fixture()
@@ -109,7 +112,7 @@ class SheetsTests(unittest.TestCase):
         put(snap, 8, 1, {"stringValue": "後から増えたカット"})
         snap["sheets"][0]["properties"]["gridProperties"]["rowCount"] = 9
         plan = analyze_sheet(snap, snap["sheets"][0])
-        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6, 8]], "total_frames": 120}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6, 8]], "fps": "30/1", "total_frames": 120}
         with self.assertRaisesRegex(BatchError, "unowned old total"):
             expected_writes(plan, timing, snap)
 
@@ -140,7 +143,7 @@ class SheetsTests(unittest.TestCase):
     def test_boolean_frame_count_is_invalid(self):
         snap = fixture()
         plan = analyze_sheet(snap, snap["sheets"][0])
-        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": True} for r in [4, 5, 6]], "total_frames": 3}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": True} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 3}
         with self.assertRaisesRegex(BatchError, "Invalid measured"):
             expected_writes(plan, timing, snap)
 
@@ -149,7 +152,7 @@ class SheetsTests(unittest.TestCase):
         # Transport is isolated here; actual live reads are separately verified.
         snap = fixture()
         plan = analyze_sheet(snap, snap["sheets"][0])
-        prepared = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "total_frames": 90}
+        prepared = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 90}
         writes = expected_writes(plan, prepared, snap)
         before_cells = entered_cells(snap["sheets"][0])
         before = {k: entered(before_cells, *map(int, k.split(":"))) for k in writes}
@@ -176,7 +179,7 @@ class SheetsTests(unittest.TestCase):
         from videobatch.sheets import writeback
         snap = fixture()
         plan = analyze_sheet(snap, snap["sheets"][0])
-        prepared = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "total_frames": 90}
+        prepared = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 90}
         changed = copy.deepcopy(snap)
         put(changed, 4, 7, {"numberValue": 777})
         with tempfile.TemporaryDirectory() as directory:

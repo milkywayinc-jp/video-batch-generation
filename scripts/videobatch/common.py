@@ -9,9 +9,8 @@ import tempfile
 import wave
 from pathlib import Path
 
-FPS = 30
+# Internal editing PCM format, independent of the sheet's video timebase.
 RATE = 48000
-SPF = RATE // FPS
 
 
 class BatchError(Exception):
@@ -85,7 +84,10 @@ def new_directory(path):
 
 
 def validate_prepared(plan, prepared):
-    require(prepared.get("status") == "timing_ready" and prepared.get("schema_version") == 1,
+    from .rules import Timebase, validate_rules
+    rules = validate_rules(plan)
+    tb = Timebase(rules["values"]["video"]["fps"])
+    require(prepared.get("status") == "timing_ready" and prepared.get("schema_version") == 2,
             "Use a measured prepared.json produced by prepare; no provisional timing writes")
     require(prepared.get("plan_hash") == digest(plan), "Plan changed after preparation")
     require(prepared.get("integrity") == digest({k: v for k, v in prepared.items() if k != "integrity"}),
@@ -93,5 +95,8 @@ def validate_prepared(plan, prepared):
     require(file_hash(prepared["audio_path"]) == prepared["audio_hash"], "Prepared audio changed")
     with wave.open(prepared["audio_path"], "rb") as f:
         require(f.getframerate() == RATE and f.getnchannels() == 1 and f.getsampwidth() == 2
-                and f.getnframes() == prepared["total_frames"] * SPF and prepared["tail_frames"] == 60,
+                and f.getnframes() == tb.sample(prepared["total_frames"])
+                and prepared["tail_frames"] == tb.frames(rules["values"]["audio"]["tail_seconds"])
+                and prepared["resolved_rules_hash"] == rules["integrity"]
+                and prepared["fps"] == tb.text,
                 "Prepared audio/frame duration mismatch")

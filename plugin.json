@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "video-batch-generation",
+  "version": "0.2.0",
+  "description": "スプレッドシートを制作ルールの正本にする動画一括生成。基準版シートのコピーと制作チャットのセットアップ付き。",
+  "repository": "https://github.com/milkywayinc-jp/video-batch-generation",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md",
+      "interface": {
+        "displayName": "動画一括生成",
+        "shortDescription": "シートのルールで動画を制作し、自分用の台本と制作チャットを準備",
+        "defaultPrompt": [
+          "動画一括生成をセットアップして、新しい制作チャットと自分用の台本シートのコピーを作ってください。",
+          "コピーした台本シートの最新ルールを読んで、動画一括生成を進めてください。"
+        ]
+      }
+    }
+  }
+}
