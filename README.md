@@ -12,7 +12,7 @@ Googleスプレッドシートの台本と指定から動画を編集する、Co
 
 管理者から受け取った配布基準版へのアクセスが必要です。台本・書式込みで自分用にコピーし、制作チャットを準備します。チャット作成機能がない環境では、コピーURLと開始文を渡します。
 
-配布の形は保存済みの **2026-10-20-v1** を維持します。制作時は各利用者が編集したコピーの最新内容を使います。
+配布の形は保存済みの **2026-10-20-v2** を維持します。制作時は各利用者が編集したコピーの最新内容を使います。
 
 ## 制作の流れ
 
@@ -25,4 +25,4 @@ Googleスプレッドシートの台本と指定から動画を編集する、Co
 
 ダウンロード・clone・閲覧だけでは、生成・チャット作成・Driveへの書込は動きません。台本・素材・認証情報は非公開で管理し、元シートや共有権限を変更しません。
 
-[制作スキル](skills/video-batch-generation/SKILL.md) · [セットアップ](skills/setup/SKILL.md) · [CLI](references/cli.md) · [対応ルール](references/rules.md) · [検証](references/validation.md)
+[制作スキル](skills/video-batch-generation/SKILL.md) · [セットアップ](skills/setup/SKILL.md) · [CLI](references/cli.md) · [対応ルール](references/rules.md) · [検証](references/validation.md) · [音声の社内利用記録](references/voice-authorization.md)

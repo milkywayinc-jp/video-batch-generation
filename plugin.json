@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "video-batch-generation",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "スプレッドシートを制作ルールの正本にする動画一括生成。基準版シートのコピーと制作チャットのセットアップ付き。",
   "repository": "https://github.com/milkywayinc-jp/video-batch-generation",
   "extensions": {

@@ -5,7 +5,7 @@
 ```sh
 python3 scripts/video_batch.py setup \
   --source-id SOURCE_ID \
-  --release templates/releases/2026-10-20-v1.json \
+  --release templates/releases/2026-10-20-v2.json \
   --state-dir PRIVATE_STATE
 ```
 
