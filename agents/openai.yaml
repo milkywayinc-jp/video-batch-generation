@@ -1,0 +1,4 @@
+interface:
+  display_name: "動画一括生成"
+  short_description: "★付き台本を読み、音声の実測尺で正方形動画を一括編集・検証"
+  default_prompt: "$video-batch-generation で指定スプレッドシートの★付き台本を読み、動画の一括制作を進めてください。"

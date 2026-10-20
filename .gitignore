@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+/runs/
+/local/
+/reviews/
+.env
+.env.*
+*.mp4
+*.wav
+*.mp3
+*.ttf
+*.otf
+*.sqlite*
