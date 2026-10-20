@@ -46,7 +46,7 @@ def parser():
     prepare.add_argument("--plan", required=True)
     prepare.add_argument("--edit", required=True)
     prepare.add_argument("--out", required=True)
-    write = commands.add_parser("writeback", help="Default: preview; --apply explicitly writes only G/H values")
+    write = commands.add_parser("writeback", help="Default: preview; --apply writes H timing and clears owned legacy G labels")
     write.add_argument("--plan", required=True)
     write.add_argument("--prepared", required=True)
     write.add_argument("--state-dir", required=True, help="Same shared local state directory for all runs")

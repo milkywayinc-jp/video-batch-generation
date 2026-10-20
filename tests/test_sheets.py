@@ -70,7 +70,7 @@ class SheetsTests(unittest.TestCase):
             expected_writes(plan, timing, changed)
         writes = expected_writes(plan, timing, snap)
         self.assertEqual(writes["7:7"], {"numberValue": 3.1})
-        self.assertTrue(all(k.endswith(":7") or k == "7:6" for k in writes))
+        self.assertTrue(all(k.endswith(":7") for k in writes))
 
     def test_old_total_moves_without_clearing_new_cut_duration(self):
         snap = fixture()
@@ -85,6 +85,54 @@ class SheetsTests(unittest.TestCase):
         self.assertEqual(writes["7:6"], {})
         self.assertEqual(writes["7:7"], {"numberValue": 1})
         self.assertEqual(writes["8:7"], {"numberValue": 4})
+
+    def test_owned_legacy_label_is_removed_without_changing_total(self):
+        snap = fixture()
+        put(snap, 7, 6, {"stringValue": "合計秒数"})
+        put(snap, 7, 7, {"numberValue": 3})
+        plan = analyze_sheet(snap, snap["sheets"][0])
+        previous = {"status": "confirmed", "total_row": 7,
+                    "writes": {"7:6": {"stringValue": "合計秒数"}, "7:7": {"numberValue": 3}}}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 90}
+        writes = expected_writes(plan, timing, snap, previous)
+        self.assertEqual(writes["7:6"], {})
+        self.assertEqual(writes["7:7"], {"numberValue": 3})
+
+    def test_unlabeled_total_can_be_reused_and_moved(self):
+        snap = fixture()
+        put(snap, 7, 7, {"numberValue": 3})
+        plan = analyze_sheet(snap, snap["sheets"][0])
+        previous = {"status": "confirmed", "total_row": 7,
+                    "writes": {"7:7": {"numberValue": 3}}}
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 90}
+        self.assertNotIn("7:6", expected_writes(plan, timing, snap, previous))
+        with self.assertRaisesRegex(BatchError, "unowned"):
+            expected_writes(plan, timing, snap)
+        previous["writes"]["7:6"] = {"stringValue": "合計秒数"}
+        self.assertNotIn("7:6", expected_writes(plan, timing, snap, previous))
+        put(snap, 7, 1, {"stringValue": "追加"})
+        plan = analyze_sheet(snap, snap["sheets"][0])
+        timing.update(source_hash=plan["source_hash"], cuts=[{"row": r, "frames": 30} for r in [4, 5, 6, 7]], total_frames=120)
+        # The operator has already removed G; an old receipt must not recreate it.
+        previous["writes"]["7:6"] = {"stringValue": "合計秒数"}
+        writes = expected_writes(plan, timing, snap, previous)
+        self.assertTrue(all(k.endswith(":7") for k in writes))
+        self.assertEqual(writes["7:7"], {"numberValue": 1})
+        self.assertEqual(writes["8:7"], {"numberValue": 4})
+        put(snap, 7, 6, {"stringValue": "利用者の新しいカット指定"})
+        plan = analyze_sheet(snap, snap["sheets"][0])
+        timing["source_hash"] = plan["source_hash"]
+        with self.assertRaisesRegex(BatchError, "Previous total was edited"):
+            expected_writes(plan, timing, snap, previous)
+
+    def test_unowned_cut_timing_is_preserved_after_total_becomes_a_cut(self):
+        snap = fixture()
+        put(snap, 7, 1, {"stringValue": "追加カット"})
+        put(snap, 7, 7, {"numberValue": 3})
+        plan = analyze_sheet(snap, snap["sheets"][0])
+        timing = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6, 7]], "fps": "30/1", "total_frames": 120}
+        with self.assertRaisesRegex(BatchError, "Cut timing contains unowned"):
+            expected_writes(plan, timing, snap)
 
     def test_last_row_at_grid_limit_stops(self):
         snap = fixture()
@@ -173,6 +221,60 @@ class SheetsTests(unittest.TestCase):
                 result = writeback(plan, prepared_path, root / "state", apply=True, edit_window=True)
                 self.assertEqual(result["status"], "confirmed")
                 self.assertTrue(result["resumed"])
+                transport.assert_not_called()
+
+    def test_same_prepared_legacy_label_cleanup_is_applied_only_once(self):
+        from videobatch.sheets import writeback, ownership_path
+        from videobatch.common import read_json
+        snap = fixture()
+        legacy = {f"{r}:7": {"numberValue": 1} for r in [4, 5, 6]}
+        legacy.update({"7:6": {"stringValue": "合計秒数"}, "7:7": {"numberValue": 3}})
+        for key, val in legacy.items():
+            put(snap, *map(int, key.split(":")), val)
+        plan = analyze_sheet(snap, snap["sheets"][0])
+        prepared = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 90}
+        after = copy.deepcopy(snap)
+        put(after, 7, 6, {})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "prepared.json"
+            save_json(path, prepared)
+            journal_path = ownership_path(root / "state", plan) / "journal.json"
+            save_json(journal_path, {"status": "confirmed", "source_hash": plan["source_hash"],
+                "prepared_hash": file_hash(path), "total_row": 7, "before": legacy, "writes": legacy})
+            with patch("videobatch.sheets.validate_prepared"), patch("videobatch.sheets.live_snapshot", return_value=snap), patch("videobatch.sheets.run") as transport:
+                self.assertEqual(writeback(plan, path, root / "state")["status"], "dry_run")
+                with self.assertRaisesRegex(BatchError, "edit-window"):
+                    writeback(plan, path, root / "state", apply=True)
+                transport.assert_not_called()
+            with patch("videobatch.sheets.validate_prepared"), patch("videobatch.sheets.live_snapshot", side_effect=[snap, snap, copy.deepcopy(after)]), patch("videobatch.sheets.run") as transport:
+                self.assertEqual(writeback(plan, path, root / "state", apply=True, edit_window=True)["status"], "confirmed")
+                transport.assert_called_once()
+            self.assertEqual(read_json(journal_path)["writes"]["7:6"], {})
+            with patch("videobatch.sheets.validate_prepared"), patch("videobatch.sheets.live_snapshot", return_value=after), patch("videobatch.sheets.run") as transport:
+                self.assertTrue(writeback(plan, path, root / "state", apply=True, edit_window=True)["resumed"])
+                transport.assert_not_called()
+
+    def test_legacy_cleanup_requires_fresh_plan_after_original_write_changed_cells(self):
+        from videobatch.sheets import writeback, ownership_path
+        snap = fixture()
+        plan = analyze_sheet(snap, snap["sheets"][0])
+        prepared = {"source_hash": plan["source_hash"], "cuts": [{"row": r, "frames": 30} for r in [4, 5, 6]], "fps": "30/1", "total_frames": 90}
+        legacy = {f"{r}:7": {"numberValue": 1} for r in [4, 5, 6]}
+        legacy.update({"7:6": {"stringValue": "合計秒数"}, "7:7": {"numberValue": 3}})
+        after = copy.deepcopy(snap)
+        for key, val in legacy.items():
+            put(after, *map(int, key.split(":")), val)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "prepared.json"
+            save_json(path, prepared)
+            save_json(ownership_path(root / "state", plan) / "journal.json", {"status": "confirmed",
+                "source_hash": plan["source_hash"], "prepared_hash": file_hash(path), "total_row": 7,
+                "before": {k: {} for k in legacy}, "writes": legacy})
+            with patch("videobatch.sheets.validate_prepared"), patch("videobatch.sheets.live_snapshot", return_value=after), patch("videobatch.sheets.run") as transport:
+                with self.assertRaisesRegex(BatchError, "inspect/resolve/prepare"):
+                    writeback(plan, path, root / "state", apply=True, edit_window=True)
                 transport.assert_not_called()
 
     def test_header_annotation_and_float_roundtrip_are_supported(self):

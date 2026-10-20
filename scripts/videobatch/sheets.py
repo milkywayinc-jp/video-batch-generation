@@ -139,7 +139,7 @@ def analyze_sheet(snapshot, sheet):
     cuts, orphans, old_totals = [], [], []
     for row in range(header + 1, props["gridProperties"]["rowCount"] + 1):
         primary = [value(cells, row, c) for c in (1, 5, 8)]
-        if value(cells, row, 6) == "合計秒数" and not any(primary):
+        if not any(primary) and (value(cells, row, 6) == "合計秒数" or value(cells, row, 7) != ""):
             old_totals.append(row)
             continue
         if not any(primary):
@@ -248,7 +248,7 @@ def expected_writes(plan, prepared, snapshot, previous=None):
     updates = {}
     owned = previous.get("writes", {}) if previous and previous.get("status") == "confirmed" else {}
     for old in plan.get("old_total_candidates", []):
-        require(owned.get(f"{old}:6") == entered(cells, old, 6)
+        require((not entered(cells, old, 6) or owned.get(f"{old}:6") == entered(cells, old, 6))
                 and owned.get(f"{old}:7") == entered(cells, old, 7),
                 "An unowned old total exists; reconcile it before writing another total")
     # Clear only the previous total, never a user entry, never all historic H cells.
@@ -258,6 +258,8 @@ def expected_writes(plan, prepared, snapshot, previous=None):
             key = f"{old_row}:{col}"
             old = owned.get(key)
             if old is not None:
+                if col == 6 and not entered(cells, old_row, col):
+                    continue  # A removed label does not invalidate ownership of H.
                 require(entered(cells, old_row, col) == old, "Previous total was edited; no cells changed")
                 updates[key] = {}
     for col in (6, 7):
@@ -265,6 +267,9 @@ def expected_writes(plan, prepared, snapshot, previous=None):
         existing = entered(cells, end, col)
         require(not existing or owned.get(key) == existing, "Total destination contains unowned data")
     for cut in prepared["cuts"]:
+        existing = entered(cells, cut["row"], 7)
+        require(not existing or owned.get(f"{cut['row']}:7") == existing,
+                "Cut timing contains unowned data; reconcile before writing")
         require(isinstance(cut["frames"], int) and not isinstance(cut["frames"], bool)
                 and cut["frames"] > 0, "Invalid measured frame count")
         from .rules import Timebase
@@ -272,7 +277,8 @@ def expected_writes(plan, prepared, snapshot, previous=None):
         updates[f"{cut['row']}:7"] = {"numberValue": tb.seconds(cut["frames"])}
     require(isinstance(prepared["total_frames"], int) and not isinstance(prepared["total_frames"], bool)
             and sum(c["frames"] for c in prepared["cuts"]) == prepared["total_frames"], "Timing total mismatch")
-    updates[f"{end}:6"] = {"stringValue": "合計秒数"}
+    if entered(cells, end, 6) == owned.get(f"{end}:6") == {"stringValue": "合計秒数"}:
+        updates[f"{end}:6"] = {}
     updates[f"{end}:7"] = {"numberValue": tb.seconds(prepared["total_frames"])}
     return updates
 
@@ -317,7 +323,12 @@ def writeback(plan, prepared_path, state_root, apply=False, edit_window=False):
                 previous["status"] = "confirmed"
                 previous["writes"] = actual
                 save_json(journal_path, previous)
-                return {"status": "confirmed", "receipt": str(journal_path), "resumed": True}
+                legacy_label = actual.get(f"{previous.get('total_row')}:6") == {"stringValue": "合計秒数"}
+                if not legacy_label:
+                    return {"status": "confirmed", "receipt": str(journal_path), "resumed": True}
+                # Cleanup is a new write; a pre-write plan cannot authorize current cells.
+                require(sheet_fingerprint(sheet) == plan["source_hash"],
+                        "Legacy label cleanup needs a current plan; inspect/resolve/prepare again")
         if previous and previous["status"] == "pending":
             actual = {k: entered(cells, *map(int, k.split(":"))) for k in previous["writes"]}
             if same_cell_values(actual, previous["writes"]):
