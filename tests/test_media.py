@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from videobatch.common import BatchError, RATE, read_json
 from videobatch.media import (adjust_audio, pcm, save_pcm, silence_intervals, validate_batches,
-                              ffmpeg, prepare_media, render_media, mix_pcm, probe)
+                              ffmpeg, prepare_media, render_media, mix_pcm, probe, normalize_timeline)
 from videobatch.sheets import analyze_sheet, edit_template
 from videobatch.rules import cut_rules, Timebase
 from test_sheets import fixture, put
@@ -20,6 +20,47 @@ from support import resolved, fonts
 
 @unittest.skipUnless(shutil.which('ffmpeg'), 'ffmpeg required for real media processing')
 class AudioTests(unittest.TestCase):
+    def test_mastering_keeps_tone_clean_and_preserves_exact_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            signal = array.array('h', (int((14000 if i % RATE < RATE // 10 else 2200)
+                                               * math.sin(2 * math.pi * 220 * i / RATE))
+                                       for i in range(6 * RATE)))
+            save_pcm(root / 'source.wav', signal.tobytes() + bytes(RATE * 2))
+            before = (root / 'source.wav').read_bytes()
+            audio = {'loudness_lufs': -10.5, 'peak_dbtp': -1}
+            result = normalize_timeline(root / 'source.wav', root / 'master.wav', 210,
+                                        Timebase('30'), 30, audio)
+            self.assertEqual((root / 'source.wav').read_bytes(), before)
+            output = array.array('h', pcm(root / 'master.wav'))
+            self.assertEqual(len(output), 7 * RATE)
+            self.assertFalse(any(output[-RATE:]))
+            self.assertLessEqual(abs(float(result['after']['input_i']) + 10.5), 0.2)
+            self.assertLessEqual(float(result['after']['input_tp']), -1)
+            self.assertLessEqual(abs(float(result['aac_preflight']['input_i']) + 10.5), 0.3)
+            self.assertLessEqual(float(result['aac_preflight']['input_tp']), -1)
+            stable = output[int(1.3 * RATE):int(1.8 * RATE)]
+            def magnitude(harmonic):
+                omega = 2 * math.pi * 220 * harmonic / RATE
+                return abs(complex(sum(x * math.cos(omega * i) for i, x in enumerate(stable)),
+                                   sum(x * math.sin(omega * i) for i, x in enumerate(stable))))
+            distortion = math.sqrt(sum(magnitude(h) ** 2 for h in range(2, 10))) / magnitude(1)
+            self.assertLess(distortion, 0.01)
+            bases = {a['base_hash'] for a in result['attempts'] if 'base_hash' in a}
+            self.assertLessEqual(len(bases), 1)
+
+    def test_lowest_supported_peak_does_not_exceed_loudnorm_range(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tone = array.array('h', (int(3000 * math.sin(2 * math.pi * 220 * i / RATE))
+                                    for i in range(3 * RATE)))
+            save_pcm(root / 'source.wav', tone.tobytes())
+            result = normalize_timeline(root / 'source.wav', root / 'master.wav', 90,
+                                        Timebase('30'), 0, {'loudness_lufs': -24, 'peak_dbtp': -9})
+            self.assertLessEqual(float(result['after']['input_tp']), -9)
+            self.assertLessEqual(float(result['aac_preflight']['input_tp']), -9)
+            self.assertLessEqual(abs(float(result['after']['input_i']) + 24), 0.2)
+
     def test_mix_refuses_irreversible_pcm_clipping(self):
         with self.assertRaisesRegex(BatchError, 'clip'):
             mix_pcm(array.array('h', [30000]).tobytes(), array.array('h', [30000]).tobytes(), 0)

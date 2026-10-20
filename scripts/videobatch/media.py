@@ -212,7 +212,7 @@ def normalize_timeline(path, out, frames, tb, tail_frames, audio):
     attempts = []
     exact = tb.sample(frames) * 2
     tail_bytes = tb.samples(frames - tail_frames, tail_frames) * 2
-    target, peak = audio["loudness_lufs"], max(-9, audio["peak_dbtp"] - 2)
+    target, peak = audio["loudness_lufs"], audio["peak_dbtp"] - 0.5
 
     def finalize(candidate):
         data = pcm(candidate)
@@ -233,7 +233,7 @@ def normalize_timeline(path, out, frames, tb, tail_frames, audio):
         after = finalize(out)
     else:
         candidate = out.with_name(out.stem + ".initial.wav")
-        filt = (f"loudnorm=I={target}:TP={peak}:LRA=7:linear=false:"
+        filt = (f"loudnorm=I={target}:TP={max(-9, peak)}:LRA=7:linear=false:"
                 f"measured_I={measure['input_i']}:measured_LRA={measure['input_lra']}:"
                 f"measured_TP={measure['input_tp']}:measured_thresh={measure['input_thresh']}:"
                 f"offset={measure['target_offset']},aresample={RATE}")
@@ -242,26 +242,46 @@ def normalize_timeline(path, out, frames, tb, tail_frames, audio):
         attempts.append({"method": "two-pass-loudnorm", "measurement": after})
         if not acceptable(after):
             # A high requested loudness with peak headroom may need compression.
-            compressed = out.with_name(out.stem + ".compressed.wav")
-            ffmpeg(["-i", path, "-af", "acompressor=threshold=0.01:ratio=10:attack=0.01:release=5:detection=peak:knee=1",
-                    "-ar", str(RATE), "-c:a", "pcm_s16le", compressed])
-            candidate = compressed
+            compressed = out.with_name(out.stem + ".compressed-float.wav")
+            ffmpeg(["-i", path, "-af", "acompressor=threshold=0.08:ratio=3:attack=15:release=120:detection=rms:knee=4",
+                    "-ar", str(RATE), "-c:a", "pcm_f32le", compressed])
+            base_hash = file_hash(compressed)
+            current = loudness(compressed)
+            require(math.isfinite(float(current["input_i"])), "Compression produced no measurable audio")
+            gain = target - float(current["input_i"])
+            maximum_gain = gain + 6
             for index in range(6):
-                current = loudness(candidate)
-                require(math.isfinite(float(current["input_i"])), "Compression produced no measurable audio")
-                gain = target - float(current["input_i"])
+                require(file_hash(compressed) == base_hash, "Float mastering source changed")
                 limited = out.with_name(out.stem + f".limited-{index}.wav")
-                ffmpeg(["-i", candidate, "-af",
-                        f"aresample=192000,volume={gain:.6f}dB,alimiter=limit={10 ** (peak / 20)}:level=0:latency=1:attack=0.1:release=1,aresample={RATE}",
+                ffmpeg(["-i", compressed, "-af",
+                        f"aresample=192000,volume={gain:.6f}dB,alimiter=limit={10 ** (peak / 20)}:level=0:latency=1:attack=5:release=100,aresample={RATE}",
                         "-ar", str(RATE), "-c:a", "pcm_s16le", limited])
                 candidate = limited
                 after = finalize(candidate)
-                attempts.append({"method": "compression-and-lookahead-limiting", "gain_db": gain, "measurement": after})
+                attempts.append({"method": "rms-compression-and-smooth-limiting", "gain_db": gain,
+                                 "base_path": str(compressed), "base_hash": base_hash, "measurement": after})
                 if acceptable(after):
                     break
-        require(acceptable(after), "Unable to reach loudness/peak target; inspect mastering attempts")
+                gain += target - float(after["input_i"])
+                if gain > maximum_gain:
+                    break
+        require(acceptable(after),
+                f"Sheet loudness/peak target cannot be reached without harsher compression "
+                f"(last {after['input_i']} LUFS, target {target}); revise the sheet target")
         save_pcm(out, pcm(candidate))
-    return {"before": measure, "after": after, "silent": silent, "attempts": attempts}
+    # Check the delivery codec before prepare can succeed and enable sheet writes.
+    # PCM headroom alone cannot guarantee AAC's reconstructed true peak.
+    preview = out.with_name(out.stem + ".aac-preflight.m4a")
+    ffmpeg(["-i", out, "-map", "0:a:0", "-c:a", "aac", "-b:a", "192k",
+            "-ar", str(RATE), preview])
+    encoded = loudness(preview)
+    if not silent:
+        require(math.isfinite(float(encoded["input_i"])) and abs(float(encoded["input_i"]) - target) <= 0.3,
+                f"AAC preflight loudness target missed: {encoded['input_i']} LUFS; revise the sheet target")
+        require(float(encoded["input_tp"]) <= audio["peak_dbtp"],
+                f"AAC preflight true peak exceeds sheet limit: {encoded['input_tp']}; revise the sheet target")
+    return {"before": measure, "after": after, "silent": silent, "attempts": attempts,
+            "aac_preflight": encoded}
 
 
 def prepare_media(plan, edit, out_dir):

@@ -95,6 +95,8 @@ python3 scripts/video_batch.py render --plan PLAN --prepared PREPARED --out runs
 
 本番renderは`--local-only`の代わりに`--receipt CONFIRMED_RECEIPT`を使います。機械検証合格は目視・試聴の完了を意味しません。本番完成には両方が必要です。
 
+音量合わせは声の自然さを保つ範囲で行います。音量目標とピーク上限の組み合わせによっては、強い歪みを加えずに両立できません。その場合は書き出しを止め、シートの音量目標を見直します。極端に速い圧縮で数値だけを合わせたり、利用者の許可なく目標を下げたりしません。再試行は同じfloat音声から行い、処理を重ねません。秒数を書き戻す前の準備段階で、納品と同じAAC設定へ試し変換し、変換後の音量・ピーク上限も検査します。
+
 契約と対応値は[ルール契約](references/rules.md)、実素材の指定は[manifest](references/manifest.md)、実施済みの検証は[validation](references/validation.md)。
 
 ## 現段階の対応範囲

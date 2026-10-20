@@ -175,6 +175,23 @@ class SheetsTests(unittest.TestCase):
                 self.assertTrue(result["resumed"])
                 transport.assert_not_called()
 
+    def test_header_annotation_and_float_roundtrip_are_supported(self):
+        import math
+        from videobatch.sheets import same_cell_values
+        snap = fixture()
+        put(snap, 3, 7, {"stringValue": "秒数\n※触らない※"})
+        self.assertEqual(analyze_sheet(snap, snap["sheets"][0])["header_row"], 3)
+        requested = {"4:7": {"numberValue": 1.5666666666666667}}
+        returned = {"4:7": {"numberValue": 1.5666666666666669}}
+        self.assertTrue(same_cell_values(returned, requested))
+        self.assertFalse(same_cell_values({"4:7": {"numberValue": 1.57}}, requested))
+        self.assertFalse(same_cell_values({"4:7": {"stringValue": "1.5666666666666667"}}, requested))
+        self.assertFalse(same_cell_values({}, requested))
+        long_value = {"24:7": {"numberValue": 10000.0}}
+        adjacent = {"24:7": {"numberValue": math.nextafter(10000.0, math.inf)}}
+        self.assertTrue(same_cell_values(adjacent, long_value))
+        self.assertFalse(same_cell_values({"24:7": {"numberValue": 10000.01}}, long_value))
+
     def test_immediate_recheck_stops_before_api_mutation(self):
         from videobatch.sheets import writeback
         snap = fixture()

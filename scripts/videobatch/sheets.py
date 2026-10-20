@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import re
 import tempfile
@@ -126,7 +127,7 @@ def analyze_sheet(snapshot, sheet):
     props = sheet["properties"]
     require("★" in props["title"], "Non-★ sheet is excluded")
     cells = entered_cells(sheet)
-    headers = [r for r, c in cells if c == 7 and value(cells, r, 7) == "秒数"
+    headers = [r for r, c in cells if c == 7 and str(value(cells, r, 7)).partition("\n")[0].strip() == "秒数"
                and value(cells, r, 8) == "音声生成用テキスト"
                and value(cells, r, 5) == "素材名"]
     require(len(headers) == 1, f"{props['title']}: cannot uniquely identify headers")
@@ -288,6 +289,14 @@ def update_request(plan, writes):
     return {"requests": requests}
 
 
+def same_cell_values(actual, expected):
+    return actual.keys() == expected.keys() and all(
+        actual[k] == v or (set(actual[k]) == set(v) == {"numberValue"}
+                          and abs(actual[k]["numberValue"] - v["numberValue"]) <= max(
+                              1e-12, 4 * math.ulp(actual[k]["numberValue"]), 4 * math.ulp(v["numberValue"])))
+        for k, v in expected.items())
+
+
 def writeback(plan, prepared_path, state_root, apply=False, edit_window=False):
     prepared = read_json(prepared_path)
     validate_prepared(plan, prepared)
@@ -301,19 +310,21 @@ def writeback(plan, prepared_path, state_root, apply=False, edit_window=False):
         if previous and previous["source_hash"] == plan["source_hash"] \
                 and previous["prepared_hash"] == file_hash(prepared_path):
             actual = {k: entered(cells, *map(int, k.split(":"))) for k in previous["writes"]}
-            if actual == previous["writes"]:
+            if same_cell_values(actual, previous["writes"]):
                 restored = copy.deepcopy(sheet)
                 restore_entered(restored, previous["before"])
                 require_plan_unchanged(plan, restored)
                 previous["status"] = "confirmed"
+                previous["writes"] = actual
                 save_json(journal_path, previous)
                 return {"status": "confirmed", "receipt": str(journal_path), "resumed": True}
         if previous and previous["status"] == "pending":
             actual = {k: entered(cells, *map(int, k.split(":"))) for k in previous["writes"]}
-            if actual == previous["writes"]:
+            if same_cell_values(actual, previous["writes"]):
                 previous["status"] = "confirmed"
+                previous["writes"] = actual
                 save_json(journal_path, previous)
-            elif actual == previous["before"]:
+            elif same_cell_values(actual, previous["before"]):
                 raise BatchError("Previous write did not apply; archive its journal after reviewing it, then retry")
             else:
                 raise BatchError("Uncertain write conflicts with current cells; manual reconciliation required")
@@ -338,12 +349,14 @@ def writeback(plan, prepared_path, state_root, apply=False, edit_window=False):
         after = live_snapshot(plan["spreadsheet_id"], plan["sheet_id"])
         after_sheet = find_sheet(after, plan["sheet_id"])
         after_cells = entered_cells(after_sheet)
-        require(all(entered(after_cells, *map(int, k.split(":"))) == v for k, v in writes.items()),
+        actual = {k: entered(after_cells, *map(int, k.split(":"))) for k in writes}
+        require(same_cell_values(actual, writes),
                 "Readback mismatch; journal retained pending, do not blindly retry")
         # Restore only our cells in the readback copy to check all other script inputs.
         restore_entered(after_sheet, before)
         require_plan_unchanged(plan, after_sheet)
         journal["status"] = "confirmed"
+        journal["writes"] = actual
         save_json(journal_path, journal)
         return {"status": "confirmed", "receipt": str(journal_path)}
 
